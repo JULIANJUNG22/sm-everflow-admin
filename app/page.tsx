@@ -133,7 +133,7 @@ export default function Page(){
     return text.includes(query.toLowerCase()) && (statusFilter==="전체" || p.status===statusFilter);
   }),[products,query,statusFilter]);
 
-  async function retryQuery(run:()=>Promise<any>){
+  async function retryQuery(run:()=>PromiseLike<any>){
     let res=await run();
     if(res?.error && isJwtTimeError(res.error.message)){
       await sleep(1200);
