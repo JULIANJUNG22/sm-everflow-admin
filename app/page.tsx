@@ -45,6 +45,14 @@ type PlatformAccount = {
   active:boolean; priority:number; metrics:Record<string,any>; note?:string;
 };
 
+type PurchaseInboxStatus = "구매확정" | "1차결제완료" | "현지배송중" | "현지배송완료" | "대행창고보관" | "묶음배송선택" | "2차결제대기" | "배치전환완료" | "보류" | "취소";
+type PurchaseInboxItem = {
+  id:string; externalId:string; sourceSystem:string; purchaseMethod:string; status:PurchaseInboxStatus; purchaseAt?:string;
+  brand?:string; category:string; name:string; auction?:string; seller?:string; pureJpy:number; firstPaymentKrw:number;
+  weightG:number; localShippingDate?:string; warehouseArrivedAt?:string; sourceNote?:string; dataQuality:string;
+  batchId?:string; productId?:string; convertedAt?:string; createdAt:string; updatedAt:string;
+};
+
 type Listing = { id:string; productId:string; platform:string; price:number; status:string; url?:string };
 type Sale = {
   id:string; productId:string; channel:string; date:string; gross:number; discount:number;
@@ -61,7 +69,7 @@ type StatusEvent = {
 };
 type UserProfile = { loginId:string; name:string; role:Role };
 
-const VERSION = "0.5.3";
+const VERSION = "0.6.0";
 const ACCOUNT_MAP:Record<string,UserProfile> = {
   admin:{loginId:"admin",name:"ADMIN",role:"ADMIN"},
   jedilick:{loginId:"jedilick",name:"정환재",role:"GM"},
@@ -69,11 +77,15 @@ const ACCOUNT_MAP:Record<string,UserProfile> = {
 };
 const emailFor=(id:string)=>`${id.toLowerCase()}@smeverflow.com`;
 const won=(n:number)=>new Intl.NumberFormat("ko-KR",{style:"currency",currency:"KRW",maximumFractionDigits:0}).format(n||0);
+const yen=(n:number)=>`¥${new Intl.NumberFormat("ja-JP",{maximumFractionDigits:0}).format(n||0)}`;
 const nval=(v:FormDataEntryValue|null)=>Number(v||0);
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
 const BATCH_STEPS:BatchStatus[]=["매입중","매입완료","출고대기","국제배송중","한국도착","통관중","통관완료","국내배송중","입고완료"];
 const PRODUCT_STATUSES:ProductStatus[]=["입고전","입고완료","촬영대기","판매중","예약","판매완료","반품","보류"];
+const PURCHASE_INBOX_STEPS:PurchaseInboxStatus[]=["구매확정","1차결제완료","현지배송중","현지배송완료","대행창고보관","묶음배송선택","2차결제대기"];
+const PURCHASE_INBOX_ACTIVE = new Set<PurchaseInboxStatus>(["구매확정","1차결제완료","현지배송중","현지배송완료","대행창고보관","묶음배송선택","2차결제대기"]);
+const BUNDLE_READY_STATUSES = new Set<PurchaseInboxStatus>(["현지배송완료","대행창고보관","묶음배송선택","2차결제대기"]);
 const nav = [
   ["dashboard","대시보드",LayoutDashboard],
   ["inventory","상품·재고",Boxes],
@@ -85,6 +97,45 @@ const nav = [
 ] as const;
 
 function isJwtTimeError(message?:string){ return !!message && /JWT issued at future|not yet valid|invalid jwt/i.test(message); }
+
+function parsePurchaseImport(text:string,defaultStatus:PurchaseInboxStatus){
+  const clean=text.replace(/\r/g,"").trim();
+  const detected:PurchaseInboxStatus=clean.includes("현지배송완료")?"현지배송완료":clean.includes("현지배송중")?"현지배송중":clean.includes("1차결제완료")?"1차결제완료":defaultStatus;
+  const rows:any[]=[];
+  const tsv=clean.split("\n").map(x=>x.trim()).filter(Boolean).filter(x=>x.includes("\t"));
+  if(tsv.length){
+    for(const line of tsv){
+      const [externalId,status,brand,name,jpy,krw,auction,date,weight]=line.split("\t").map(x=>x.trim());
+      if(!externalId||!name)continue;
+      rows.push({source_system:"merujg",external_id:externalId,purchase_method:"일본경매직구",status:status||detected,brand:brand||null,category:"기타",product_name:name,auction_no:auction||null,pure_item_price_jpy:Number((jpy||"0").replaceAll(",",""))||0,first_payment_krw:Number((krw||"0").replaceAll(",",""))||0,local_weight_g:Number((weight||"0").replace(/[^0-9.]/g,""))||0,local_shipping_date:date||null,source_note:"일괄 TSV 가져오기",data_quality:"import"});
+    }
+    return rows;
+  }
+  const matches=[...clean.matchAll(/고유번호\s*[:：]\s*(\d+)/g)];
+  for(let i=0;i<matches.length;i++){
+    const m=matches[i];
+    const start=m.index||0;
+    const next=matches[i+1]?.index??clean.length;
+    const prefix=clean.slice(Math.max(0,start-360),start);
+    const detail=clean.slice(start,next);
+    const combined=prefix+"\n"+detail;
+    const externalId=m[1];
+    const auction=(detail.match(/경매번호\s*[:：]\s*([A-Za-z0-9_-]+)/)||[])[1]||null;
+    const krw1=(detail.match(/결제(?:된)?\s*금액\s*[:：]\s*[₩￦]?\s*([\d,]+)/)||[])[1];
+    const krw2=(detail.match(/JPY\s*[\d,]+\s*x?\s*1?\s*[₩￦¥]\s*([\d,]{4,})/i)||[])[1];
+    const jpy1=(detail.match(/순수물품대금\s*[:：]\s*(?:JPY|[¥￥])?\s*([\d,]+)/i)||[])[1];
+    const jpy2=(detail.match(/결제대금\s*[:：]\s*JPY\s*([\d,]+)/i)||[])[1];
+    const localDate=(detail.match(/현지배송일\s*[:：]\s*(\d{4}-\d{2}-\d{2})/)||[])[1]||null;
+    const weight=(detail.match(/중량\s*[:：]\s*([\d,.]+)\s*g/i)||[])[1];
+    const purchaseAt=(detail.match(/구매\/종료일\s*[:：][^/\n]*\/\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/)||[])[1]||null;
+    const knownBrands=["RED VALENTINO","NINA RICCI","Max Mara","MAX MARA","ENFOLD","ISABEL MARANT ETOILE","CEDRIC CHARLIER","self-portrait","WEEKEND Max Mara"];
+    const brand=knownBrands.find(b=>combined.toLowerCase().includes(b.toLowerCase()))||"";
+    const candidateLines=prefix.split("\n").map(x=>x.trim()).filter(x=>x.length>4&&!/상태|리스트|상세보기|신청체크|묶음NO|배송방법/.test(x));
+    const title=[...candidateLines].reverse().find(x=>brand?x.toLowerCase().includes(brand.toLowerCase()):true)||`${brand||"일본매입"} ${externalId}`;
+    rows.push({source_system:"merujg",external_id:externalId,purchase_method:"일본경매직구",status:detected,purchase_at:purchaseAt?purchaseAt.replace(" ","T")+"+09:00":null,brand:brand||null,category:"기타",product_name:title.slice(0,500),auction_no:auction,pure_item_price_jpy:Number((jpy1||jpy2||"0").replaceAll(",",""))||0,first_payment_krw:Number((krw1||krw2||"0").replaceAll(",",""))||0,local_weight_g:Number((weight||"0").replaceAll(",",""))||0,local_shipping_date:localDate,source_note:"대행사이트 원문 자동파싱 · 등록 후 검수 권장",data_quality:"parsed"});
+  }
+  return rows;
+}
 
 export default function Page(){
   const [session,setSession]=useState<Session|null>(null);
@@ -104,10 +155,11 @@ export default function Page(){
   const [mobile,setMobile]=useState(false);
   const [loading,setLoading]=useState(false);
   const [warnings,setWarnings]=useState<string[]>([]);
-  const [modal,setModal]=useState<{type:string; id?:string}|null>(null);
+  const [modal,setModal]=useState<{type:string; id?:string; ids?:string[]}|null>(null);
   const [imageUrls,setImageUrls]=useState<Record<string,string>>({});
   const [productImages,setProductImages]=useState<Record<string,ProductImage[]>>({});
   const [platformAccounts,setPlatformAccounts]=useState<PlatformAccount[]>([]);
+  const [purchaseInbox,setPurchaseInbox]=useState<PurchaseInboxItem[]>([]);
   const [uploadingId,setUploadingId]=useState<string|null>(null);
   const quickFile=useRef<HTMLInputElement|null>(null);
 
@@ -128,6 +180,11 @@ export default function Page(){
   const pending=sales.filter(s=>s.status!=="정산완료").reduce((a,b)=>a+b.net,0);
   const inTransit=products.filter(p=>p.logisticsStatus!=="입고완료"&&p.logisticsStatus!=="보류").length;
   const activeListings=listings.filter(l=>l.status==="판매중").length;
+  const activeInbox=purchaseInbox.filter(x=>PURCHASE_INBOX_ACTIVE.has(x.status));
+  const awaitingWarehouse=activeInbox.filter(x=>["구매확정","1차결제완료","현지배송중"].includes(x.status)).length;
+  const warehouseReady=activeInbox.filter(x=>["현지배송완료","대행창고보관","묶음배송선택","2차결제대기"].includes(x.status)).length;
+  const inboxPaid=activeInbox.reduce((a,b)=>a+b.firstPaymentKrw,0);
+  const trackedAssets=inventory.length+activeInbox.length;
   const filtered=useMemo(()=>products.filter(p=>{
     const text=`${p.id} ${p.brand} ${p.name} ${p.batch}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (statusFilter==="전체" || p.status===statusFilter);
@@ -163,13 +220,14 @@ export default function Page(){
       retryQuery(()=>supabase.from("status_events").select("*").order("created_at",{ascending:false}).limit(200)),
       retryQuery(()=>supabase.from("product_images").select("*").order("sort_order",{ascending:true}).order("image_id",{ascending:true})),
       retryQuery(()=>supabase.from("platform_accounts").select("*").order("priority",{ascending:true})),
+      retryQuery(()=>supabase.from("purchase_inbox").select("*").order("created_at",{ascending:false})),
     ]);
-    const labels=["상품","배치","플랫폼","판매","비용","상태이력","상품사진","플랫폼계정"];
+    const labels=["상품","배치","플랫폼","판매","비용","상태이력","상품사진","플랫폼계정","일본구매대기함"];
     const bad:string[]=[];
     results.forEach((r,i)=>{if(r.error)bad.push(`${labels[i]}: ${r.error.message}`)});
     setWarnings(bad);
 
-    const [p,b,l,s,e,ev,img,pa]=results;
+    const [p,b,l,s,e,ev,img,pa,pi]=results;
     let listingRows=listings;
     if(!l.error){
       listingRows=(l.data||[]).map((r:any)=>({id:String(r.listing_id),productId:r.product_id,platform:r.platform,price:Number(r.listing_price||0),status:r.status,url:r.url||""}));
@@ -221,6 +279,13 @@ export default function Page(){
     if(!pa.error)setPlatformAccounts((pa.data||[]).map((r:any)=>({
       platform:r.platform,storeName:r.store_name||"",loginId:r.login_id||"",profileCode:r.profile_code||"",joinedAt:r.joined_at||"",
       verified:!!r.verified,active:!!r.active,priority:Number(r.priority||50),metrics:r.metrics||{},note:r.note||""
+    })));
+    if(!pi.error)setPurchaseInbox((pi.data||[]).map((r:any)=>({
+      id:String(r.item_id),externalId:r.external_id,sourceSystem:r.source_system,purchaseMethod:r.purchase_method,status:r.status as PurchaseInboxStatus,
+      purchaseAt:r.purchase_at||"",brand:r.brand||"",category:r.category||"기타",name:r.product_name,auction:r.auction_no||"",seller:r.seller_name||"",
+      pureJpy:Number(r.pure_item_price_jpy||0),firstPaymentKrw:Number(r.first_payment_krw||0),weightG:Number(r.local_weight_g||0),
+      localShippingDate:r.local_shipping_date||"",warehouseArrivedAt:r.warehouse_arrived_at||"",sourceNote:r.source_note||"",dataQuality:r.data_quality||"manual",
+      batchId:r.batch_id||"",productId:r.product_id||"",convertedAt:r.converted_at||"",createdAt:r.created_at,updatedAt:r.updated_at
     })));
     setLoading(false);
   }
@@ -466,10 +531,77 @@ export default function Page(){
     await loadAll();
   }
 
+  async function createPurchaseInbox(fd:FormData){
+    const row={
+      source_system:"merujg",external_id:String(fd.get("externalId")||"").trim(),purchase_method:String(fd.get("purchaseMethod")||"일본경매직구"),
+      status:String(fd.get("status")||"구매확정"),purchase_at:String(fd.get("purchaseAt")||"")||null,brand:String(fd.get("brand")||"")||null,
+      category:String(fd.get("category")||"기타"),product_name:String(fd.get("name")||"").trim(),auction_no:String(fd.get("auction")||"")||null,
+      seller_name:String(fd.get("seller")||"")||null,pure_item_price_jpy:nval(fd.get("pureJpy")),first_payment_krw:nval(fd.get("firstPaymentKrw")),
+      local_weight_g:nval(fd.get("weightG")),local_shipping_date:String(fd.get("localShippingDate")||"")||null,
+      source_note:String(fd.get("sourceNote")||"")||null,data_quality:"manual"
+    };
+    if(!row.external_id||!row.product_name){alert("고유번호와 상품명은 필수입니다.");return;}
+    const {error}=await supabase.from("purchase_inbox").insert(row);
+    if(error){alert(`구매대기 등록 실패: ${error.message}`);return;}
+    setModal(null);await loadAll();
+  }
+
+  async function savePurchaseInbox(fd:FormData){
+    const id=Number(fd.get("id"));
+    const patch={
+      external_id:String(fd.get("externalId")||"").trim(),purchase_method:String(fd.get("purchaseMethod")||"일본경매직구"),status:String(fd.get("status")),
+      purchase_at:String(fd.get("purchaseAt")||"")||null,brand:String(fd.get("brand")||"")||null,category:String(fd.get("category")||"기타"),
+      product_name:String(fd.get("name")||"").trim(),auction_no:String(fd.get("auction")||"")||null,seller_name:String(fd.get("seller")||"")||null,
+      pure_item_price_jpy:nval(fd.get("pureJpy")),first_payment_krw:nval(fd.get("firstPaymentKrw")),local_weight_g:nval(fd.get("weightG")),
+      local_shipping_date:String(fd.get("localShippingDate")||"")||null,source_note:String(fd.get("sourceNote")||"")||null
+    };
+    const {error}=await supabase.from("purchase_inbox").update(patch).eq("item_id",id);
+    if(error){alert(`구매대기 저장 실패: ${error.message}`);return;}
+    setModal(null);await loadAll();
+  }
+
+  async function updatePurchaseInboxStatus(id:string,status:PurchaseInboxStatus){
+    const {error}=await supabase.from("purchase_inbox").update({status}).eq("item_id",Number(id));
+    if(error){alert(`상태 변경 실패: ${error.message}`);return;}await loadAll();
+  }
+
+  async function deletePurchaseInbox(id:string){
+    if(!confirm("이 구매대기 기록을 삭제할까요? 실제 상품으로 전환된 기록은 삭제하지 않는 것을 권장합니다."))return;
+    const item=purchaseInbox.find(x=>x.id===id);
+    if(item?.convertedAt){alert("이미 배치/상품으로 전환된 기록은 삭제할 수 없습니다.");return;}
+    const {error}=await supabase.from("purchase_inbox").delete().eq("item_id",Number(id));
+    if(error){alert(error.message);return;}await loadAll();
+  }
+
+  async function importPurchaseInbox(fd:FormData){
+    const text=String(fd.get("rawText")||"").trim();
+    const requested=String(fd.get("status")||"1차결제완료") as PurchaseInboxStatus;
+    if(!text){alert("붙여넣을 원문 또는 TSV 데이터가 없습니다.");return;}
+    const rows=parsePurchaseImport(text,requested);
+    if(!rows.length){alert("고유번호를 찾지 못했습니다. 원문에 ‘고유번호’가 포함되어 있는지 확인하거나 TSV 형식을 사용하세요.");return;}
+    const {error}=await supabase.from("purchase_inbox").upsert(rows,{onConflict:"source_system,external_id",ignoreDuplicates:false});
+    if(error){alert(`일괄 가져오기 실패: ${error.message}`);return;}
+    alert(`${rows.length}건을 구매대기함에 반영했습니다.`);setModal(null);await loadAll();
+  }
+
+  async function createBatchFromInbox(fd:FormData){
+    const ids=String(fd.get("ids")||"").split(",").map(x=>Number(x)).filter(Boolean);
+    const batchId=String(fd.get("batchId")||"").trim();
+    const date=String(fd.get("date")||new Date().toISOString().slice(0,10));
+    if(!ids.length||!batchId){alert("선택상품과 배치ID를 확인하세요.");return;}
+    const {data,error}=await supabase.rpc("create_batch_from_purchase_inbox",{
+      p_item_ids:ids,p_batch_id:batchId,p_batch_date:date,p_tracking_no:String(fd.get("tracking")||"")||null,
+      p_carrier:String(fd.get("carrier")||"EMS"),p_bundle_no:String(fd.get("bundle")||"")||null,p_note:String(fd.get("note")||"")||null
+    });
+    if(error){alert(`묶음배송 배치 생성 실패: ${error.message}`);return;}
+    void data;
+    alert(`${batchId} 배치와 ${ids.length}개 상품을 생성했습니다.`);setModal(null);await loadAll();
+  }
+
   function exportExcel(){
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
-      ["SM EVERFLOW | WEB EXPORT",`v${VERSION}`],["현재 재고",inventory.length],["통관/배송중",inTransit],
+      ["SM EVERFLOW | WEB EXPORT",`v${VERSION}`],["추적 보유자산",trackedAssets],["배치/재고",inventory.length],["일본 구매대기",activeInbox.length],["일본 대기 1차결제",inboxPaid],["통관/배송중",inTransit],
       ["현재 확인 원가",verified],["관리 완전원가",total],["활성 판매등록",activeListings],
       ["누적 판매총액",gross],["실제 정산액",settled],["미정산",pending]
     ]),"01_대시보드");
@@ -486,6 +618,7 @@ export default function Page(){
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(expenses),"06_공통비용");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(events),"09_상태이력");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(platformAccounts.map(a=>({플랫폼:a.platform,상점명:a.storeName||"",로그인ID:a.loginId||"",프로필코드:a.profileCode||"",가입일:a.joinedAt||"",인증:a.verified?"Y":"N",활성:a.active?"Y":"N",우선순위:a.priority,메모:a.note||""}))),"10_플랫폼계정");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(purchaseInbox.map(x=>({구매대기ID:x.id,외부고유번호:x.externalId,상태:x.status,매입방식:x.purchaseMethod,브랜드:x.brand||"",품목:x.category,상품명:x.name,경매번호:x.auction||"",순수물품대금JPY:x.pureJpy,일차결제KRW:x.firstPaymentKrw,현지중량g:x.weightG,현지배송일:x.localShippingDate||"",배치ID:x.batchId||"",상품ID:x.productId||"",데이터품질:x.dataQuality,메모:x.sourceNote||""}))),"04_일본구매대기");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(Object.values(productImages).flat().map(i=>({상품ID:i.productId,사진ID:i.id,대표:i.isPrimary?"Y":"N",저장경로:i.path,원본파일:i.originalName||"",정렬:i.sortOrder}))),"11_상품사진");
     XLSX.writeFile(wb,`SM_EVERFLOW_v${VERSION}_${new Date().toISOString().slice(0,10).replaceAll("-","")}.xlsx`);
   }
@@ -502,6 +635,7 @@ export default function Page(){
   const editBatch=batches.find(b=>b.id===modal?.id);
   const editProduct=products.find(p=>p.id===modal?.id);
   const editAccount=platformAccounts.find(a=>a.platform===modal?.id);
+  const editInbox=purchaseInbox.find(x=>x.id===modal?.id);
 
   return <div className="shell">
     <aside className={mobile?"open":""}>
@@ -517,13 +651,13 @@ export default function Page(){
       <div className="content">
         {warnings.length>0&&<div className="warningBox"><AlertTriangle size={16}/><div><b>일부 데이터 연결 확인 필요</b>{warnings.map(w=><span key={w}>{w}</span>)}</div></div>}
         {loading&&<div className="loadingBar">데이터를 동기화하고 있습니다...</div>}
-        {view==="dashboard"&&<Dashboard products={products} batches={batches} listings={listings} sales={sales} inventory={inventory} verified={verified} total={total} gross={gross} settled={settled} pending={pending} inTransit={inTransit} activeListings={activeListings} events={events} onBatch={(id:string)=>setModal({type:"batch-edit",id})}/>}
+        {view==="dashboard"&&<Dashboard products={products} batches={batches} listings={listings} sales={sales} purchaseInbox={purchaseInbox} inventory={inventory} verified={verified} total={total} gross={gross} settled={settled} pending={pending} inTransit={inTransit} activeListings={activeListings} trackedAssets={trackedAssets} awaitingWarehouse={awaitingWarehouse} warehouseReady={warehouseReady} inboxPaid={inboxPaid} events={events} onBatch={(id:string)=>setModal({type:"batch-edit",id})} onPurchases={()=>setView("purchases")}/>}
         {view==="inventory"&&<InventoryView rows={filtered} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} imageUrls={imageUrls} productImages={productImages} uploadingId={uploadingId} onEdit={(id:string)=>setModal({type:"product-edit",id})} onStatus={updateProductStatus}/>}
-        {view==="purchases"&&<PurchasesView batches={batches} products={products} expenses={expenses} onStatus={updateBatchStatus} onEdit={(id:string)=>setModal({type:"batch-edit",id})} onNew={()=>setModal({type:"batch-create"})} onAddProduct={(id:string)=>setModal({type:"product-create",id})} onAllocate={allocateBatchCost}/>}
+        {view==="purchases"&&<PurchasesView batches={batches} products={products} expenses={expenses} purchaseInbox={purchaseInbox} onStatus={updateBatchStatus} onEdit={(id:string)=>setModal({type:"batch-edit",id})} onNew={()=>setModal({type:"batch-create"})} onAddProduct={(id:string)=>setModal({type:"product-create",id})} onAllocate={allocateBatchCost} onInboxNew={()=>setModal({type:"inbox-create"})} onInboxImport={()=>setModal({type:"inbox-import"})} onInboxEdit={(id:string)=>setModal({type:"inbox-edit",id})} onInboxStatus={updatePurchaseInboxStatus} onInboxDelete={deletePurchaseInbox} onMakeBatch={(ids:string[])=>setModal({type:"inbox-batch-create",ids})}/>}
         {view==="platforms"&&<PlatformsView listings={listings} products={products} accounts={platformAccounts} onNew={()=>setModal({type:"listing-create"})} onEditAccount={(id:string)=>setModal({type:"platform-account-edit",id})} onStatus={setListingStatus} onDelete={deleteListing}/>}
         {view==="sales"&&<SalesView sales={sales} products={products} onNew={()=>setModal({type:"sale-create"})} onSettle={settleSale}/>}
         {view==="cash"&&<CashView expenses={expenses} batches={batches} sales={sales} onNew={()=>setModal({type:"expense-create"})} onDelete={deleteExpense}/>}
-        {view==="settings"&&<SettingsView user={user} products={products} batches={batches} listings={listings} sales={sales} events={events} platformAccounts={platformAccounts}/>}
+        {view==="settings"&&<SettingsView user={user} products={products} batches={batches} listings={listings} sales={sales} events={events} platformAccounts={platformAccounts} purchaseInbox={purchaseInbox}/>}
       </div>
     </main>
 
@@ -531,6 +665,10 @@ export default function Page(){
     {modal?.type==="batch-create"&&<Modal title="새 매입·입고 배치" onClose={()=>setModal(null)}><BatchCreateForm onSubmit={createBatch}/></Modal>}
     {modal?.type==="product-edit"&&editProduct&&<Modal title={`상품 관리 · ${editProduct.id}`} onClose={()=>setModal(null)}><ProductForm product={editProduct} batches={batches} images={productImages[editProduct.id]||[]} uploading={uploadingId===editProduct.id} events={events.filter(e=>e.entityType==="product"&&e.entityId===editProduct.id)} onUpload={uploadPhotos} onPrimary={setPrimaryImage} onDeleteImage={deleteProductImage} onSubmit={saveProduct}/></Modal>}
     {modal?.type==="product-create"&&<Modal title={modal.id?`배치 상품 추가 · ${modal.id}`:"빠른 매입 등록"} onClose={()=>setModal(null)}><ProductCreateForm batches={batches} defaultBatch={modal.id||""} fileRef={quickFile} onSubmit={createProduct}/></Modal>}
+    {modal?.type==="inbox-create"&&<Modal title="일본 구매대기 · 단건 등록" onClose={()=>setModal(null)}><PurchaseInboxForm onSubmit={createPurchaseInbox}/></Modal>}
+    {modal?.type==="inbox-edit"&&editInbox&&<Modal title={`일본 구매대기 · ${editInbox.externalId}`} onClose={()=>setModal(null)}><PurchaseInboxForm item={editInbox} onSubmit={savePurchaseInbox}/></Modal>}
+    {modal?.type==="inbox-import"&&<Modal title="대행사이트 원문 · 일괄 가져오기" onClose={()=>setModal(null)}><PurchaseInboxImportForm onSubmit={importPurchaseInbox}/></Modal>}
+    {modal?.type==="inbox-batch-create"&&<Modal title="묶음배송 배치 생성" onClose={()=>setModal(null)}><InboxBatchCreateForm items={purchaseInbox.filter(x=>(modal.ids||[]).includes(x.id))} batches={batches} onSubmit={createBatchFromInbox}/></Modal>}
     {modal?.type==="platform-account-edit"&&editAccount&&<Modal title={`${editAccount.platform} 계정 정보`} onClose={()=>setModal(null)}><PlatformAccountForm account={editAccount} onSubmit={savePlatformAccount}/></Modal>}
     {modal?.type==="listing-create"&&<Modal title="플랫폼 등록" onClose={()=>setModal(null)}><ListingForm products={inventory.filter(p=>!["판매완료","반품"].includes(p.status))} onSubmit={createListing}/></Modal>}
     {modal?.type==="sale-create"&&<Modal title="판매·정산 입력" onClose={()=>setModal(null)}><SaleForm products={inventory.filter(p=>!["판매완료","반품"].includes(p.status))} onSubmit={createSale}/></Modal>}
@@ -541,19 +679,24 @@ export default function Page(){
 function AuthShell({children}:{children:React.ReactNode}){return <div className="authPage"><div className="authCard">{children}</div></div>}
 
 function Dashboard(props:any){
-  const {products,batches,inventory,verified,total,gross,settled,pending,inTransit,activeListings,events,onBatch}=props;
+  const {products,batches,purchaseInbox,inventory,verified,total,gross,settled,pending,inTransit,activeListings,trackedAssets,awaitingWarehouse,warehouseReady,inboxPaid,events,onBatch,onPurchases}=props;
   const customs=batches.filter((b:Batch)=>b.status==="통관중");
-  return <><Intro title="오늘의 운영 현황" copy="상품 1점의 매입부터 통관·입고·판매·정산까지 같은 ID로 추적합니다."/>
-  <div className="kpis">
-    <Kpi dark label="현재 재고" value={`${inventory.length}점`} note={`통관·배송중 ${inTransit}점`}/>
-    <Kpi label="현재 확인 원가" value={won(verified)} note="현재까지 확인된 직접비"/>
+  const activePurchase=(purchaseInbox as PurchaseInboxItem[]).filter(x=>PURCHASE_INBOX_ACTIVE.has(x.status));
+  const statusCount=(status:PurchaseInboxStatus)=>activePurchase.filter(x=>x.status===status).length;
+  return <><Intro title="오늘의 운영 현황" copy="일본 현지 구매대기부터 통관·입고·판매·정산까지 회사가 돈을 지출한 자산을 모두 추적합니다."/>
+  <div className="kpis wide">
+    <Kpi dark label="추적 보유자산" value={`${trackedAssets}점`} note={`배치/상품 ${inventory.length} + 일본대기 ${activePurchase.length}`}/>
+    <Kpi label="일본 구매대기" value={`${activePurchase.length}점`} note={`1차결제 누계 ${won(inboxPaid)}`}/>
+    <Kpi label="현지 이동중" value={`${awaitingWarehouse}점`} note="구매확정·1차결제·현지배송"/>
+    <Kpi label="묶음배송 대기" value={`${warehouseReady}점`} note="현지배송완료·대행창고"/>
+    <Kpi label="현재 확인 원가" value={won(verified)} note="배치로 전환된 직접비"/>
     <Kpi label="관리 완전원가" value={won(total)} note="공통비까지 포함"/>
-    <Kpi label="활성 판매등록" value={`${activeListings}건`} note="플랫폼 게시 상태"/>
     <Kpi label="누적 판매" value={won(gross)} note={`실제정산 ${won(settled)}`}/>
-    <Kpi label="미정산" value={won(pending)} note="정산대기 금액"/>
+    <Kpi label="미정산" value={won(pending)} note={`활성 판매등록 ${activeListings}건`}/>
   </div>
+  {activePurchase.length>0&&<section className="focusPanel purchaseNow"><div><ShoppingBag size={20}/><div><small>JAPAN PURCHASE NOW</small><h3>한국행 배치 전 일본 보유자산 {activePurchase.length}점</h3><p>낙찰·즉결 구매가 끝난 순간부터 추적합니다. 현지배송완료 상품은 묶음배송 대상 선택 전까지 구매대기함에 남습니다.</p></div></div><div className="purchaseStageChips">{PURCHASE_INBOX_STEPS.map(status=><span key={status} className={statusCount(status)?"hot":""}>{status}<b>{statusCount(status)}</b></span>)}</div><button className="btn dark" onClick={onPurchases}>매입·수입에서 관리 <ChevronRight size={15}/></button></section>}
   {customs.length>0&&<section className="focusPanel"><div><Landmark size={20}/><div><small>CUSTOMS NOW</small><h3>현재 {customs.length}개 배치가 통관중입니다.</h3><p>관세청 단계가 끝나면 배치 상태를 ‘통관완료’로 바꾸세요. 연결된 상품 상태도 자동으로 같이 바뀝니다.</p></div></div><div className="focusList">{customs.map((b:Batch)=><button key={b.id} onClick={()=>onBatch(b.id)}><b>{b.id}</b><span>{b.ems}</span><ChevronRight size={15}/></button>)}</div></section>}
-  <div className="grid two"><section className="panel"><Head over="INBOUND PIPELINE" title="입고 파이프라인"/>{batches.map((b:Batch)=><div className="ship" key={b.id}><StatusIcon status={b.status}/><div><b>{b.id}</b><StatusBadge status={b.status}/><small>{b.source} · {b.ems||"운송장 없음"}</small></div><div className="shipValue"><b>{b.count}점</b><span>{won(b.cost)}</span></div></div>)}</section>
+  <div className="grid two"><section className="panel"><Head over="INBOUND PIPELINE" title="한국행 입고 파이프라인"/>{batches.map((b:Batch)=><div className="ship" key={b.id}><StatusIcon status={b.status}/><div><b>{b.id}</b><StatusBadge status={b.status}/><small>{b.source} · {b.ems||"운송장 없음"}</small></div><div className="shipValue"><b>{b.count}점</b><span>{won(b.cost)}</span></div></div>)}</section>
   <section className="panel"><Head over="RECENT STATUS" title="최근 상태 변경"/>{events.slice(0,8).map((e:StatusEvent)=><div className="eventRow" key={e.id}><History size={14}/><div><b>{e.entityId}</b><span>{e.fromStatus||"-"} → {e.toStatus}</span></div><small>{fmtDateTime(e.createdAt)}</small></div>)}</section></div>
   <section className="panel tablePanel"><Head over="RECENT INVENTORY" title="최근 상품"/><SimpleProductTable rows={products.slice(0,8)}/></section></>
 }
@@ -570,22 +713,41 @@ function InventoryView({rows,query,setQuery,statusFilter,setStatusFilter,imageUr
  <td><button type="button" className="btn light compact" onClick={e=>{e.stopPropagation();onEdit(p.id)}}><Edit3 size={14}/>수정</button></td></tr>)}</tbody></table></div></section></>
 }
 
-function PurchasesView({batches,products,expenses,onStatus,onEdit,onNew,onAddProduct,onAllocate}:any){
- return <><div className="introRow"><Intro title="매입 배치를 먼저 열고 상품을 계속 붙입니다." copy="현장에서 상품을 하나씩 디지털화하지 못해도 됩니다. 배치를 ‘매입중’으로 열어두고 사진·상품은 나중에 계속 추가하세요."/><button className="btn dark" onClick={onNew}><Plus size={16}/>새 매입 배치</button></div>
+function PurchasesView({batches,products,expenses,purchaseInbox,onStatus,onEdit,onNew,onAddProduct,onAllocate,onInboxNew,onInboxImport,onInboxEdit,onInboxStatus,onInboxDelete,onMakeBatch}:any){
+ return <><div className="introRow"><Intro title="매입을 두 층으로 관리합니다." copy="일본은 낙찰·즉결 후 구매대기함에서 먼저 추적하고, 묶음배송을 결정하는 순간 배치·상품으로 전환합니다. 국내 시장매입은 기존처럼 배치를 먼저 열고 사무실에서 상품을 붙입니다."/><button className="btn dark" onClick={onNew}><Plus size={16}/>새 매입 배치</button></div>
+ <PurchaseInboxPanel items={purchaseInbox} onNew={onInboxNew} onImport={onInboxImport} onEdit={onInboxEdit} onStatus={onInboxStatus} onDelete={onInboxDelete} onMakeBatch={onMakeBatch}/>
+ <div className="sectionDivider"><div><small>BATCH OPERATIONS</small><h3>국제배송 · 국내매입 배치</h3><p>묶음배송을 시작한 일본 상품과 국내 시장매입은 이 단계부터 배치로 관리합니다.</p></div></div>
  <div className="batchGrid">{batches.map((b:Batch)=>{
   const idx=BATCH_STEPS.indexOf(b.status); const next=idx>=0&&idx<BATCH_STEPS.length-1?BATCH_STEPS[idx+1]:null;
   const batchExpenses=expenses.filter((e:Expense)=>e.batch===b.id&&e.managementCost).reduce((a:number,x:Expense)=>a+x.amount,0);
   const allocatable=b.customsDuty+b.importVat+b.clearanceFee+b.domesticShipping+b.travelCost+b.otherCost+batchExpenses;
   const progress=b.expectedProductCount>0?Math.min(100,Math.round((b.count/b.expectedProductCount)*100)):0;
   return <section className="panel batchCard" key={b.id}><div className="batchTop"><div><small>{b.id}</small><h3>{b.source}</h3><span className="batchSub">{b.purchaseType} · {b.purchaseCurrency}{b.purchaseAmountLocal>0?` ${new Intl.NumberFormat("ko-KR").format(b.purchaseAmountLocal)}`:""}</span></div><StatusBadge status={b.status}/></div>
-  <div className="flow">{BATCH_STEPS.map((s,i)=><div key={s} className={i<=idx?"done":""}><i/>{s}</div>)}</div>
+  <div className="flow">{BATCH_STEPS.map((st,i)=><div key={st} className={i<=idx?"done":""}><i/>{st}</div>)}</div>
   <div className="stats"><div><span>묶음</span><b>{b.bundle||"-"}</b></div><div><span>{b.carrier||"EMS"}</span><b>{b.ems||"-"}</b></div><div><span>상품</span><b>{b.count}{b.expectedProductCount>0?` / ${b.expectedProductCount}`:""}점</b>{b.expectedProductCount>0&&<small>{progress}% 디지털화</small>}</div><div><span>확인원가</span><b>{won(b.cost)}</b></div></div>
-  <div className="batchActions"><button className="btn accent" onClick={()=>onAddProduct(b.id)}><Plus size={15}/>이 배치에 상품 추가</button><select value={b.status} onChange={e=>onStatus(b.id,e.target.value)}>{BATCH_STEPS.map(s=><option key={s}>{s}</option>)}<option>보류</option></select>
+  <div className="batchActions"><button className="btn accent" onClick={()=>onAddProduct(b.id)}><Plus size={15}/>이 배치에 상품 추가</button><select value={b.status} onChange={e=>onStatus(b.id,e.target.value)}>{BATCH_STEPS.map(st=><option key={st}>{st}</option>)}<option>보류</option></select>
   {next&&<button className="btn dark" onClick={()=>onStatus(b.id,next)}><CheckCircle2 size={15}/>{next}로 진행</button>}
   <button className="btn light" onClick={()=>onEdit(b.id)}><Edit3 size={15}/>비용·상세</button></div>
   {allocatable>0&&<div className="allocation"><span>배부 가능 공통비 <b>{won(allocatable)}</b></span><button onClick={()=>onAllocate(b,"equal")}>균등배부</button><button onClick={()=>onAllocate(b,"cost")}>원가비례</button></div>}
   {b.note&&<div className="note">{b.note}</div>}</section>
  })}</div></>
+}
+
+function PurchaseInboxPanel({items,onNew,onImport,onEdit,onStatus,onDelete,onMakeBatch}:any){
+  const [selected,setSelected]=useState<string[]>([]);
+  const [filter,setFilter]=useState<string>("진행중");
+  const active=(items as PurchaseInboxItem[]).filter(x=>PURCHASE_INBOX_ACTIVE.has(x.status));
+  const rows=(items as PurchaseInboxItem[]).filter(x=>filter==="전체"?true:filter==="진행중"?PURCHASE_INBOX_ACTIVE.has(x.status):x.status===filter);
+  const selectable=rows.filter(x=>BUNDLE_READY_STATUSES.has(x.status)&&!x.convertedAt);
+  const allChecked=selectable.length>0&&selectable.every(x=>selected.includes(x.id));
+  const toggleAll=()=>setSelected(allChecked?selected.filter(id=>!selectable.some(x=>x.id===id)):[...new Set([...selected,...selectable.map(x=>x.id)])]);
+  const warehouseReady=active.filter(x=>["현지배송완료","대행창고보관","묶음배송선택","2차결제대기"].includes(x.status)).length;
+  const paid=active.reduce((a,b)=>a+b.firstPaymentKrw,0);
+  return <section className="panel inboxPanel"><div className="inboxHead"><div><small>JAPAN PURCHASE INBOX</small><h3>일본 구매대기함</h3><p>낙찰·즉결 구매가 끝났지만 아직 국제배송 묶음이 정해지지 않은 자산입니다.</p></div><div className="inboxActions"><button className="btn light" onClick={onImport}><Upload size={15}/>원문·일괄 가져오기</button><button className="btn accent" onClick={onNew}><Plus size={15}/>단건 추가</button></div></div>
+  <div className="inboxSummary"><div><span>진행중</span><b>{active.length}점</b></div><div><span>묶음배송 가능</span><b>{warehouseReady}점</b></div><div><span>확인된 1차결제</span><b>{won(paid)}</b></div><div><span>순수물품대금</span><b>{yen(active.reduce((a,b)=>a+b.pureJpy,0))}</b></div></div>
+  <div className="inboxToolbar"><label className="checkAll"><input type="checkbox" checked={allChecked} onChange={toggleAll}/> 현재목록 선택</label><select value={filter} onChange={e=>setFilter(e.target.value)}><option>진행중</option><option>전체</option>{PURCHASE_INBOX_STEPS.map(x=><option key={x}>{x}</option>)}<option>배치전환완료</option><option>보류</option><option>취소</option></select><span>{selected.length}개 선택</span><button className="btn dark" disabled={!selected.length} onClick={()=>onMakeBatch(selected)}><PackageCheck size={15}/>묶음배송 배치 만들기</button></div>
+  <div className="tableWrap inboxTable"><table><thead><tr><th></th><th>고유번호 · 상품</th><th>현재상태</th><th>순수물품</th><th>1차결제</th><th>현지배송</th><th>전환</th><th></th></tr></thead><tbody>{rows.map((x:PurchaseInboxItem)=><tr key={x.id} className={x.convertedAt?"converted":""}><td><input type="checkbox" disabled={!!x.convertedAt||!BUNDLE_READY_STATUSES.has(x.status)} checked={selected.includes(x.id)} onChange={e=>setSelected(e.target.checked?[...new Set([...selected,x.id])]:selected.filter(id=>id!==x.id))}/></td><td className="clickCell" onClick={()=>onEdit(x.id)}><b>{x.externalId} · {x.brand||"브랜드 미확인"}</b><small className="block">{x.name}</small>{x.auction&&<small className="block mutedText">경매 {x.auction}</small>}</td><td><select className="statusSelect inboxStatus" value={x.status} disabled={!!x.convertedAt} onChange={e=>onStatus(x.id,e.target.value)}>{PURCHASE_INBOX_STEPS.map(st=><option key={st}>{st}</option>)}<option>보류</option><option>취소</option>{x.status==="배치전환완료"&&<option>배치전환완료</option>}</select></td><td><b>{yen(x.pureJpy)}</b></td><td>{won(x.firstPaymentKrw)}</td><td>{x.localShippingDate||"-"}{x.weightG>0&&<small className="block">{x.weightG}g</small>}</td><td>{x.productId?<><b>{x.productId}</b><small className="block">{x.batchId}</small></>:<span className="mini">배치전</span>}</td><td><div className="rowActions"><button className="iconBtn" onClick={()=>onEdit(x.id)}><Edit3 size={14}/></button>{!x.convertedAt&&<button className="iconBtn danger" onClick={()=>onDelete(x.id)}><Trash2 size={14}/></button>}</div></td></tr>)}</tbody></table></div>
+  {rows.length===0&&<Empty icon={<ShoppingBag/>} title="해당 상태의 구매대기 상품이 없습니다." copy="대행사이트 원문을 붙여넣거나 단건으로 등록하세요."/>}</section>
 }
 
 function PlatformsView({listings,products,accounts,onNew,onEditAccount,onStatus,onDelete}:any){
@@ -618,11 +780,12 @@ function CashView({expenses,batches,sales,onNew,onDelete}:any){
  <section className="panel tablePanel"><div className="tableWrap"><table><thead><tr><th>일자</th><th>분류</th><th>배치</th><th>금액</th><th>회계비용</th><th>관리원가</th><th>비고</th><th></th></tr></thead><tbody>{expenses.map((e:Expense)=><tr key={e.id}><td>{e.date}</td><td>{e.category}</td><td>{e.batch||"-"}</td><td><b>{won(e.amount)}</b></td><td>{e.accountingCost?"Y":"-"}</td><td>{e.managementCost?"Y":"-"}</td><td>{e.note||"-"}</td><td><button className="iconBtn danger" onClick={()=>onDelete(e.id)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></>
 }
 
-function SettingsView({user,products,batches,listings,sales,events,platformAccounts}:any){
+function SettingsView({user,products,batches,listings,sales,events,platformAccounts,purchaseInbox}:any){
+ const activeInbox=(purchaseInbox as PurchaseInboxItem[]).filter(x=>PURCHASE_INBOX_ACTIVE.has(x.status));
  return <><Intro title="SM EVERFLOW 운영 상태" copy="현재 버전과 데이터 무결성을 한 눈에 확인합니다."/>
  <div className="settingsGrid"><section className="panel"><Head over="SYSTEM" title={`v${VERSION}`}/><p>인증: Supabase Auth</p><p>DB: PostgreSQL + RLS</p><p>사진: Private Storage</p><p>PWA: iPhone 홈 화면 앱</p></section>
  <section className="panel"><Head over="USER" title={`${user.name} · ${user.role}`}/><p>ID: {user.loginId}</p><p>권한: 현재 운영 사용자 전체 CRUD</p></section>
- <section className="panel"><Head over="DATA" title="데이터 현황"/><p>상품 {products.length} · 배치 {batches.length}</p><p>플랫폼 {listings.length} · 판매 {sales.length}</p><p>상태이력 {events.length}건</p><p>플랫폼 계정 {platformAccounts.length}개</p></section></div></>
+ <section className="panel"><Head over="DATA" title="데이터 현황"/><p>상품 {products.length} · 배치 {batches.length}</p><p>일본 구매대기 {activeInbox.length} · 누적기록 {purchaseInbox.length}</p><p>플랫폼 {listings.length} · 판매 {sales.length}</p><p>상태이력 {events.length}건 · 플랫폼 계정 {platformAccounts.length}개</p></section></div></>
 }
 
 function BatchForm({batch,events,onSubmit}:{batch:Batch;events:StatusEvent[];onSubmit:(fd:FormData)=>void}){
@@ -664,6 +827,24 @@ function ProductCreateForm({batches,defaultBatch,fileRef,onSubmit}:any){
  const selected=batches.find((b:Batch)=>b.id===defaultBatch);
  return <form onSubmit={e=>{e.preventDefault();void onSubmit(new FormData(e.currentTarget))}}><div className="callout"><b>{defaultBatch?`${defaultBatch} 배치에 상품을 추가합니다.`:"상품 1점을 새로 등록합니다."}</b><span>사진은 없어도 먼저 등록할 수 있고, 앨범에서 최대 10장까지 선택하면 첫 사진이 대표사진으로 자동 지정됩니다.</span></div><Field label="사진 (선택 · 최대 10장)"><input ref={fileRef} type="file" accept="image/*" multiple/></Field>
  <div className="formGrid two"><Field label="배치"><select name="batch" defaultValue={defaultBatch}><option value="">배치 없음 / 국내 단건</option>{batches.map((b:Batch)=><option key={b.id}>{b.id}</option>)}</select></Field><Field label="매입일"><input name="date" type="date" defaultValue={new Date().toISOString().slice(0,10)}/></Field><Field label="매입유형"><select name="purchaseType" defaultValue={selected?.purchaseType||"국내현금매입"}><option>국내현금매입</option><option>일본경매직구</option><option>일본온라인직구</option><option>일본직접매입</option></select></Field><Field label="브랜드"><input name="brand" required/></Field><Field label="품목"><input name="category"/></Field><Field label="상품명"><input name="name" required/></Field><Field label="사이즈"><input name="size"/></Field><Field label="컬러"><input name="color"/></Field><Money name="verifiedCost" label="현재 확인 매입비"/><Field label="매입처"><input name="source" defaultValue={selected?.source||""}/></Field></div><Field label="메모"><textarea name="note"/></Field><ModalActions/></form>
+}
+
+function PurchaseInboxForm({item,onSubmit}:{item?:PurchaseInboxItem;onSubmit:(fd:FormData)=>void}){
+  return <form onSubmit={e=>{e.preventDefault();void onSubmit(new FormData(e.currentTarget))}}>{item&&<input type="hidden" name="id" value={item.id}/>}<div className="callout"><b>일본 현지 구매자산</b><span>낙찰·즉결 구매가 끝난 순간부터 묶음배송 전까지 추적합니다. 상품 사진·정밀 검수는 한국 입고 후 보강해도 됩니다.</span></div><div className="formGrid three"><Field label="대행사이트 고유번호"><input name="externalId" defaultValue={item?.externalId||""} required/></Field><Field label="현재 상태"><select name="status" defaultValue={item?.status||"구매확정"}>{PURCHASE_INBOX_STEPS.map(x=><option key={x}>{x}</option>)}<option>보류</option><option>취소</option>{item?.status==="배치전환완료"&&<option>배치전환완료</option>}</select></Field><Field label="매입방식"><select name="purchaseMethod" defaultValue={item?.purchaseMethod||"일본경매직구"}><option>일본경매직구</option><option>일본온라인직구</option><option>일본직접매입</option></select></Field><Field label="브랜드"><input name="brand" defaultValue={item?.brand||""}/></Field><Field label="품목"><input name="category" defaultValue={item?.category||"기타"}/></Field><Field label="경매번호"><input name="auction" defaultValue={item?.auction||""}/></Field><Field label="구매일시"><input name="purchaseAt" type="datetime-local" defaultValue={item?.purchaseAt?item.purchaseAt.slice(0,16):""}/></Field><Field label="현지배송일"><input name="localShippingDate" type="date" defaultValue={item?.localShippingDate||""}/></Field><Field label="중량(g)"><input name="weightG" type="number" inputMode="numeric" defaultValue={item?.weightG||""}/></Field><Money name="pureJpy" label="순수물품대금 JPY" value={item?.pureJpy||0}/><Money name="firstPaymentKrw" label="1차결제 총액 KRW" value={item?.firstPaymentKrw||0}/><Field label="판매자/출품자"><input name="seller" defaultValue={item?.seller||""}/></Field></div><Field label="상품명"><input name="name" defaultValue={item?.name||""} required/></Field><Field label="메모"><textarea name="sourceNote" defaultValue={item?.sourceNote||""}/></Field>{item?.convertedAt&&<div className="warn"><b>배치 전환 완료</b><span>{item.batchId} · {item.productId}</span></div>}<ModalActions/></form>
+}
+
+function PurchaseInboxImportForm({onSubmit}:{onSubmit:(fd:FormData)=>void}){
+  const [raw,setRaw]=useState("");
+  async function pasteClipboard(){try{const t=await navigator.clipboard.readText();setRaw(t)}catch{alert("클립보드 접근이 차단되었습니다. 입력창을 길게 눌러 붙여넣기 하세요.")}}
+  return <form onSubmit={e=>{e.preventDefault();void onSubmit(new FormData(e.currentTarget))}}><div className="callout"><b>대행사이트 원문을 한 번에 가져옵니다.</b><span>페이지 전체 텍스트를 복사하거나 iPhone 사진의 라이브 텍스트를 복사해 붙여넣으세요. ‘고유번호’를 기준으로 여러 상품을 자동 분리합니다. 자동 추출 결과는 구매대기함에서 수정할 수 있습니다.</span></div><div className="formGrid two"><Field label="기본 상태"><select name="status" defaultValue="현지배송완료">{PURCHASE_INBOX_STEPS.map(x=><option key={x}>{x}</option>)}</select></Field><div className="field"><span>빠른 입력</span><button type="button" className="btn light" onClick={()=>void pasteClipboard()}><Upload size={15}/>클립보드에서 붙여넣기</button></div></div><Field label="대행사이트 원문 / TSV"><textarea name="rawText" className="importText" value={raw} onChange={e=>setRaw(e.target.value)} placeholder={'대행사이트의 목록 원문을 그대로 붙여넣으세요.\n\n대안 TSV 형식:\n고유번호[TAB]상태[TAB]브랜드[TAB]상품명[TAB]JPY금액[TAB]1차결제KRW[TAB]경매번호[TAB]현지배송일[TAB]중량g'}/></Field><div className="infoStrip"><b>V0.6 가져오기 원칙</b><span>완벽한 OCR보다 누락 없는 카운팅을 우선합니다. 자동파싱 후 브랜드·상품명·가격은 필요할 때 수정하세요.</span></div><ModalActions/></form>
+}
+
+function InboxBatchCreateForm({items,batches,onSubmit}:{items:PurchaseInboxItem[];batches:Batch[];onSubmit:(fd:FormData)=>void}){
+  const today=new Date().toISOString().slice(0,10);
+  const ym=today.slice(2,7).replace("-","");
+  const same=batches.filter(b=>b.id.startsWith(`JP-AUC-${ym}`)).length;
+  const suggested=`JP-AUC-${ym}-${String(same+1).padStart(2,"0")}`;
+  return <form onSubmit={e=>{e.preventDefault();void onSubmit(new FormData(e.currentTarget))}}><input type="hidden" name="ids" value={items.map(x=>x.id).join(",")}/><div className="callout"><b>{items.length}개 상품을 하나의 한국행 배치로 전환합니다.</b><span>이 순간 각 구매대기 상품에 SME 상품ID가 자동 부여됩니다. 운송장이 있으면 바로 ‘국제배송중’, 없으면 ‘출고대기’로 생성됩니다.</span></div><div className="selectedInboxList">{items.map(x=><div key={x.id}><b>{x.externalId} · {x.brand||"브랜드 미확인"}</b><span>{x.name}</span><small>{yen(x.pureJpy)} · {won(x.firstPaymentKrw)} · {x.status}</small></div>)}</div><div className="formGrid two"><Field label="배치ID"><input name="batchId" defaultValue={suggested} required/></Field><Field label="배치일"><input name="date" type="date" defaultValue={today}/></Field><Field label="운송사"><select name="carrier" defaultValue="EMS"><option>EMS</option><option>FedEx</option><option>DHL</option><option>해운특송</option><option>기타</option></select></Field><Field label="국제 운송장"><input name="tracking" placeholder="아직 없으면 비워두기"/></Field><Field label="묶음번호"><input name="bundle"/></Field></div><Field label="메모"><textarea name="note" defaultValue={`Purchase Inbox ${items.length}점 묶음배송 전환`}/></Field><ModalActions/></form>
 }
 
 function ListingForm({products,onSubmit}:any){return <form onSubmit={e=>{e.preventDefault();void onSubmit(new FormData(e.currentTarget))}}><Field label="상품"><select name="productId">{products.map((p:Product)=><option key={p.id} value={p.id}>{p.id} · {p.brand} · {p.name}</option>)}</select></Field><div className="formGrid two"><Field label="플랫폼"><select name="platform"><option>스마트스토어</option><option>당근마켓</option><option>번개장터</option><option>중고나라</option><option>필웨이</option><option>오프라인도매</option></select></Field><Money name="price" label="등록가"/><Field label="상태"><select name="status"><option>판매중</option><option>일시중지</option></select></Field><Field label="URL"><input name="url"/></Field></div><ModalActions/></form>}
