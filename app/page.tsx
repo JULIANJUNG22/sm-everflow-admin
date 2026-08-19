@@ -61,7 +61,7 @@ type StatusEvent = {
 };
 type UserProfile = { loginId:string; name:string; role:Role };
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.2";
 const ACCOUNT_MAP:Record<string,UserProfile> = {
   admin:{loginId:"admin",name:"ADMIN",role:"ADMIN"},
   jedilick:{loginId:"jedilick",name:"정환재",role:"GM"},
@@ -517,10 +517,10 @@ export default function Page(){
       <div className="content">
         {warnings.length>0&&<div className="warningBox"><AlertTriangle size={16}/><div><b>일부 데이터 연결 확인 필요</b>{warnings.map(w=><span key={w}>{w}</span>)}</div></div>}
         {loading&&<div className="loadingBar">데이터를 동기화하고 있습니다...</div>}
-        {view==="dashboard"&&<Dashboard products={products} batches={batches} listings={listings} sales={sales} inventory={inventory} verified={verified} total={total} gross={gross} settled={settled} pending={pending} inTransit={inTransit} activeListings={activeListings} events={events} onBatch={(id)=>setModal({type:"batch-edit",id})}/>}
-        {view==="inventory"&&<InventoryView rows={filtered} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} imageUrls={imageUrls} productImages={productImages} uploadingId={uploadingId} onEdit={(id)=>setModal({type:"product-edit",id})} onStatus={updateProductStatus}/>}
-        {view==="purchases"&&<PurchasesView batches={batches} products={products} expenses={expenses} onStatus={updateBatchStatus} onEdit={(id)=>setModal({type:"batch-edit",id})} onNew={()=>setModal({type:"batch-create"})} onAddProduct={(id)=>setModal({type:"product-create",id})} onAllocate={allocateBatchCost}/>}
-        {view==="platforms"&&<PlatformsView listings={listings} products={products} accounts={platformAccounts} onNew={()=>setModal({type:"listing-create"})} onEditAccount={(id)=>setModal({type:"platform-account-edit",id})} onStatus={setListingStatus} onDelete={deleteListing}/>}
+        {view==="dashboard"&&<Dashboard products={products} batches={batches} listings={listings} sales={sales} inventory={inventory} verified={verified} total={total} gross={gross} settled={settled} pending={pending} inTransit={inTransit} activeListings={activeListings} events={events} onBatch={(id:string)=>setModal({type:"batch-edit",id})}/>}
+        {view==="inventory"&&<InventoryView rows={filtered} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} imageUrls={imageUrls} productImages={productImages} uploadingId={uploadingId} onEdit={(id:string)=>setModal({type:"product-edit",id})} onStatus={updateProductStatus}/>}
+        {view==="purchases"&&<PurchasesView batches={batches} products={products} expenses={expenses} onStatus={updateBatchStatus} onEdit={(id:string)=>setModal({type:"batch-edit",id})} onNew={()=>setModal({type:"batch-create"})} onAddProduct={(id:string)=>setModal({type:"product-create",id})} onAllocate={allocateBatchCost}/>}
+        {view==="platforms"&&<PlatformsView listings={listings} products={products} accounts={platformAccounts} onNew={()=>setModal({type:"listing-create"})} onEditAccount={(id:string)=>setModal({type:"platform-account-edit",id})} onStatus={setListingStatus} onDelete={deleteListing}/>}
         {view==="sales"&&<SalesView sales={sales} products={products} onNew={()=>setModal({type:"sale-create"})} onSettle={settleSale}/>}
         {view==="cash"&&<CashView expenses={expenses} batches={batches} sales={sales} onNew={()=>setModal({type:"expense-create"})} onDelete={deleteExpense}/>}
         {view==="settings"&&<SettingsView user={user} products={products} batches={batches} listings={listings} sales={sales} events={events} platformAccounts={platformAccounts}/>}
