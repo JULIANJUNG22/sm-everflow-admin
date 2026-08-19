@@ -30,3 +30,5 @@ Supabase Dashboard → Authentication → Users → Add user에서 아래 이메
 
 ## Storage
 `product-images`는 private bucket이며 authenticated 사용자만 접근합니다. 10MB 제한, jpeg/png/webp/heic/heif 허용.
+
+V0.2 production deployment
