@@ -61,7 +61,7 @@ type StatusEvent = {
 };
 type UserProfile = { loginId:string; name:string; role:Role };
 
-const VERSION = "0.5.2";
+const VERSION = "0.5.3";
 const ACCOUNT_MAP:Record<string,UserProfile> = {
   admin:{loginId:"admin",name:"ADMIN",role:"ADMIN"},
   jedilick:{loginId:"jedilick",name:"정환재",role:"GM"},
@@ -562,7 +562,7 @@ function InventoryView({rows,query,setQuery,statusFilter,setStatusFilter,imageUr
  return <><Intro title="상품 하나를 끝까지 추적합니다." copy="행을 한 번 누르면 바로 상품 수정 화면이 열립니다. 대표사진 1장은 재고 썸네일로, 최대 10장은 검수·판매자료로 보관합니다."/>
  <div className="toolbar"><div className="search"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="상품ID, 브랜드, 상품명, 배치 검색"/></div>
  <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}><option>전체</option>{PRODUCT_STATUSES.map(s=><option key={s}>{s}</option>)}</select><span>{rows.length}개 상품</span></div>
- <section className="panel tablePanel"><div className="tableWrap"><table><thead><tr><th>상품</th><th>물류</th><th>판매상태</th><th>배치</th><th>확인원가</th><th>완전원가</th><th>플랫폼</th><th>사진</th><th>관리</th></tr></thead><tbody>
+ <section className="panel tablePanel inventoryTable"><div className="tableWrap"><table><thead><tr><th>상품</th><th>물류</th><th>판매상태</th><th>배치</th><th>확인원가</th><th>완전원가</th><th>플랫폼</th><th>사진</th><th>관리</th></tr></thead><tbody>
  {rows.map((p:Product)=><tr key={p.id} className="editableRow" onClick={()=>onEdit(p.id)}><td><div className="prod"><div className="thumb">{imageUrls[p.id]?<img src={imageUrls[p.id]} alt={p.name}/>:initials(p.brand)}</div><div><small>{p.id}</small><b>{p.brand}</b><span>{p.name}</span></div></div></td>
  <td><StatusBadge status={p.logisticsStatus}/></td><td onClick={e=>e.stopPropagation()}><select className="statusSelect" value={p.status} onChange={e=>onStatus(p.id,e.target.value)}>{PRODUCT_STATUSES.map(s=><option key={s}>{s}</option>)}</select></td>
  <td><small>{p.batch||"-"}</small></td><td><b>{won(p.cost)}</b></td><td><b>{won(p.totalCost)}</b></td><td><span className="mini">{p.platforms.length?p.platforms.join(", "):"미등록"}</span></td>

@@ -11,3 +11,388 @@
 .s-매입중{background:#fff1d6;color:#8d5c06}.s-매입완료{background:#f5edda;color:#876420}.s-출고대기{background:#eee8ff;color:#65549b}
 @media(max-width:1100px){.accountGrid{grid-template-columns:1fr 1fr}.galleryGrid{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:760px){.accountGrid{grid-template-columns:1fr}.galleryHead{display:block}.galleryActions{justify-content:flex-start;margin-top:10px}.galleryGrid{grid-template-columns:repeat(3,1fr)}.editableRow td:last-child{position:sticky;right:0;background:#fff}.flow{grid-template-columns:repeat(9,70px)}}
+
+/* v0.5.3 — mobile / iPhone touch UX hardening */
+html,body{
+  -webkit-text-size-adjust:100%;
+  overscroll-behavior-y:none;
+}
+button,a,select,input,textarea{
+  -webkit-tap-highlight-color:transparent;
+}
+@media(max-width:760px){
+  :root{
+    --tap:48px;
+  }
+
+  body{
+    padding:0;
+    overflow-x:hidden;
+  }
+
+  /* Header: keep every control below iOS status bar / Dynamic Island */
+  header{
+    box-sizing:border-box;
+    min-height:calc(68px + env(safe-area-inset-top));
+    height:auto;
+    padding:
+      calc(8px + env(safe-area-inset-top))
+      10px
+      8px;
+    gap:8px;
+    align-items:center;
+  }
+  .title{
+    min-width:0;
+    flex:1 1 auto;
+    gap:8px;
+  }
+  .title>div{
+    min-width:0;
+  }
+  .title small{
+    display:block;
+    max-width:132px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:7px;
+    line-height:1.2;
+  }
+  .title h1{
+    margin:3px 0 0;
+    font-size:16px;
+    line-height:1.1;
+    white-space:nowrap;
+  }
+
+  /* Minimum 48px hit-area for thumbs */
+  .mobileMenu{
+    display:grid;
+    place-items:center;
+    flex:0 0 var(--tap);
+    width:var(--tap);
+    height:var(--tap);
+    min-width:var(--tap);
+    min-height:var(--tap);
+    padding:0;
+    border:1px solid #deddd7;
+    border-radius:12px;
+    background:#fff;
+    color:#151812;
+    position:relative;
+    z-index:2;
+  }
+  .actions{
+    flex:0 0 auto;
+    gap:5px;
+  }
+  .actions .btn{
+    width:44px;
+    min-width:44px;
+    height:44px;
+    min-height:44px;
+    padding:0;
+    border-radius:11px;
+    font-size:0; /* icon-only on mobile */
+    gap:0;
+  }
+  .actions .btn svg{
+    width:18px;
+    height:18px;
+  }
+
+  /* Drawer: wider, safer and much easier to tap */
+  .shell>aside{
+    left:min(-86vw,-300px);
+    width:min(86vw,320px);
+    height:100dvh;
+    padding:
+      calc(14px + env(safe-area-inset-top))
+      14px
+      calc(14px + env(safe-area-inset-bottom));
+  }
+  .shell>aside.open{
+    left:0;
+  }
+  .brand{
+    min-height:54px;
+    padding-bottom:14px;
+  }
+  .brand>button{
+    display:grid;
+    place-items:center;
+    width:48px;
+    height:48px;
+    min-width:48px;
+    padding:0;
+    border-radius:12px;
+  }
+  nav{
+    gap:7px;
+  }
+  nav button{
+    min-height:50px;
+    height:50px;
+    border-radius:13px;
+    padding:0 14px;
+    font-size:15px;
+  }
+  nav button svg{
+    width:19px;
+    height:19px;
+  }
+  .sideUser{
+    min-height:54px;
+  }
+
+  /* Main content spacing */
+  .content{
+    padding:20px 12px calc(28px + env(safe-area-inset-bottom));
+  }
+  .intro{
+    margin-bottom:18px;
+  }
+  .intro h2{
+    font-size:24px;
+    line-height:1.18;
+  }
+  .intro p{
+    font-size:12px;
+    line-height:1.55;
+  }
+
+  /* All high-frequency controls become finger-size */
+  .btn{
+    min-height:46px;
+    border-radius:11px;
+  }
+  .btn.compact{
+    min-height:44px;
+    height:44px;
+    min-width:54px;
+    padding:0 10px;
+    font-size:11px;
+  }
+  .iconBtn,
+  .photoCount{
+    min-width:44px;
+    width:auto;
+    min-height:44px;
+    height:44px;
+    border-radius:11px;
+  }
+  .focusList button{
+    min-height:46px;
+    padding:10px 12px;
+  }
+  .toolbar .search{
+    min-height:48px;
+    height:48px;
+    border-radius:12px;
+  }
+  .toolbar>select,
+  .batchActions select,
+  .statusSelect{
+    min-height:44px;
+    font-size:14px;
+  }
+
+  /* Prevent Safari from zooming the entire UI when editing */
+  .field input,
+  .field select,
+  .field textarea,
+  .authCard input{
+    min-height:48px;
+    font-size:16px;
+    line-height:1.25;
+  }
+  .field textarea{
+    min-height:110px;
+  }
+
+  /* Inventory is an operational list on mobile, not a spreadsheet.
+     Keep only fields needed for identifying/changing a product.
+     Cost/platform/photo details remain in the one-tap edit sheet. */
+  .inventoryTable .tableWrap{
+    overflow:visible;
+  }
+  .inventoryTable table{
+    table-layout:fixed;
+    width:100%;
+  }
+  .inventoryTable th:nth-child(4),
+  .inventoryTable th:nth-child(5),
+  .inventoryTable th:nth-child(6),
+  .inventoryTable th:nth-child(7),
+  .inventoryTable th:nth-child(8),
+  .inventoryTable td:nth-child(4),
+  .inventoryTable td:nth-child(5),
+  .inventoryTable td:nth-child(6),
+  .inventoryTable td:nth-child(7),
+  .inventoryTable td:nth-child(8){
+    display:none;
+  }
+  .inventoryTable th:nth-child(1),
+  .inventoryTable td:nth-child(1){
+    width:52%;
+  }
+  .inventoryTable th:nth-child(2),
+  .inventoryTable td:nth-child(2){
+    width:18%;
+  }
+  .inventoryTable th:nth-child(3),
+  .inventoryTable td:nth-child(3){
+    width:18%;
+  }
+  .inventoryTable th:nth-child(9),
+  .inventoryTable td:nth-child(9){
+    width:56px;
+  }
+  .inventoryTable td{
+    padding:12px 7px;
+  }
+  .inventoryTable .prod{
+    min-width:0;
+    width:100%;
+    gap:8px;
+  }
+  .inventoryTable .prod>div:last-child{
+    min-width:0;
+  }
+  .inventoryTable .prod b,
+  .inventoryTable .prod span,
+  .inventoryTable .prod small{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .inventoryTable .thumb{
+    flex:0 0 44px;
+    width:44px;
+    height:44px;
+  }
+  .inventoryTable .statusBadge{
+    max-width:100%;
+    padding:6px 7px;
+    font-size:9px;
+    white-space:nowrap;
+  }
+  .inventoryTable .statusSelect{
+    width:100%;
+    max-width:86px;
+    padding:6px 4px;
+    font-size:11px;
+  }
+  .inventoryTable .editableRow td:last-child{
+    position:static;
+    background:inherit;
+  }
+
+  /* Batch cards: stack actions rather than creating tiny buttons */
+  .batchActions{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+  .batchActions>*{
+    width:100%;
+    min-width:0;
+  }
+  .batchActions .btn.accent,
+  .batchActions .btn.dark{
+    grid-column:1/-1;
+  }
+
+  /* Product detail behaves like a native full-screen sheet */
+  .modalShade{
+    align-items:stretch;
+    padding:0;
+  }
+  .modal{
+    width:100%;
+    max-width:none;
+    height:100dvh;
+    padding:
+      calc(10px + env(safe-area-inset-top))
+      14px
+      calc(24px + env(safe-area-inset-bottom));
+    border-radius:0;
+  }
+  .modalHead{
+    top:0;
+    margin:0 -2px 16px;
+    padding:8px 2px 12px;
+    min-height:58px;
+    background:#faf9f5;
+  }
+  .modalHead h3{
+    font-size:19px;
+    line-height:1.25;
+  }
+  .modalHead button{
+    width:48px;
+    height:48px;
+    min-width:48px;
+    border-radius:13px;
+  }
+  .galleryManager{
+    padding:16px 14px;
+  }
+  .galleryActions{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    width:100%;
+    gap:8px;
+  }
+  .galleryActions .btn{
+    width:100%;
+    min-height:50px;
+  }
+  .galleryGrid{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:8px;
+  }
+
+  /* Sticky bottom form action area - Save is always reachable */
+  .modalActions{
+    position:sticky;
+    bottom:calc(-1 * env(safe-area-inset-bottom));
+    z-index:8;
+    margin:18px -14px -24px;
+    padding:
+      12px
+      14px
+      calc(12px + env(safe-area-inset-bottom));
+    background:rgba(250,249,245,.96);
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
+  }
+  .modalActions .btn{
+    flex:1;
+    min-height:50px;
+  }
+}
+
+@media(max-width:390px){
+  header{
+    padding-left:8px;
+    padding-right:8px;
+  }
+  .mobileMenu{
+    width:46px;
+    min-width:46px;
+    height:46px;
+  }
+  .actions .btn{
+    width:42px;
+    min-width:42px;
+    height:42px;
+  }
+  .title small{
+    max-width:92px;
+  }
+  .inventoryTable .prod span{
+    display:none;
+  }
+}
